@@ -1,0 +1,8 @@
+.TableList .TableListRow .BasicInput.inputText input[type="text"] {
+	padding: 0 10px;
+	min-height: 30px;
+}
+
+.BasicInput {
+	margin: 0;
+}
