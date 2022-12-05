@@ -28,7 +28,7 @@ jobs:
               run: zip release.zip ./* -r
 
             - name: Tar files
-              run: tar -czf release.tar.gz *
+              run: tar --exclude='./release.zip' -czf release.tar.gz *
 
             - name: Release
               uses: softprops/action-gh-release@v1
