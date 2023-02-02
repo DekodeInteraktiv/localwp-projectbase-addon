@@ -23,12 +23,9 @@ jobs:
 
             - name: Build JS
               run: npm run build
-
-            - name: Zip files
-              run: zip release.zip ./* -r
-
+              
             - name: Tar files
-              run: tar --exclude='release.zip' -czf release.tar.gz *
+              run: tar -czf release.tar.gz *
 
             - name: Release
               uses: softprops/action-gh-release@v1
@@ -36,5 +33,4 @@ jobs:
               with:
                   generate_release_notes: true
                   files: |
-                      release.zip
                       release.tar.gz

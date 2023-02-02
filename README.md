@@ -19,7 +19,7 @@ This allows you to type in the production url and it will use that url to fetch 
 
 ## Installation
 
-* Download the zip file from the releases page.
+* Download the .tar.gz file from the releases page.
 * Go to LocalWP and press the "Addons" tab in the sidebar.
 * Press the "Installed" tab.
 * Then click the "Install from disk" button at the top right.
