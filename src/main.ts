@@ -1,6 +1,8 @@
 // https://getflywheel.github.io/local-addon-api/modules/_local_main_.html
 import { getServiceContainer, SiteData } from '@getflywheel/local/main';
 
+import { MultiSite } from '@getflywheel/local';
+
 const ServiceContainer = getServiceContainer();
 
 export default function (context) {

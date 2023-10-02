@@ -94,7 +94,6 @@ const SiteInfoExtender = ({ site }) => {
 					value={rootPath}
 					className='inputText'
 					onChange={event => {
-						// setRootPath(event.target.value);
 						setState({ rootPath: event.target.value });
 					}}
 				/>
@@ -104,7 +103,6 @@ const SiteInfoExtender = ({ site }) => {
 					value={imageURL}
 					className='inputText'
 					onChange={event => {
-						// setImageURL( event.target.value );
 						setState({ imageURL: event.target.value });
 					}}
 				/>
