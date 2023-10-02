@@ -9,6 +9,9 @@ A helper addon for LocalWP.
 ### Multisite Config fixer.
 Updates the nginx config to support our project base multisite setup.
 
+### Convert to multisite
+Adds a button to convert site to multiste sub directory setup, you should be able to setup subdomains with this setup also. 
+
 ### Root Path.
 Adds a input field to change the projects root path. Often legacy projects requires you to have a root path like this: "{{root}}/web" etc.
 
