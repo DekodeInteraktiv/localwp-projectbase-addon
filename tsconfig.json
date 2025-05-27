@@ -17,13 +17,21 @@
 		"strict": false,
 		"target": "es2015",
 		"typeRoots": [
-            "./node_modules/@types"
-        ],
+			"./node_modules/@types"
+		],
+		"skipLibCheck": true,
+		"moduleResolution": "node",
+		"allowSyntheticDefaultImports": true
 	},
 	"exclude": [
-		"node_modules"
+		"node_modules",
+		"lib",
+		"**/*.test.ts",
+		"**/*.test.tsx",
+		"**/*.spec.ts",
+		"**/*.spec.tsx"
 	],
 	"include": [
-		"src"
+		"src/**/*"
 	]
 }
