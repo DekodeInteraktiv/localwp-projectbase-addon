@@ -64,7 +64,7 @@ const collectPhpIniPaths = async (fileSystem: any, confRoot: string) => {
 	return paths;
 };
 
-const rewriteCafileEntry = (original: string, caBundlePath: string) => {
+const rewriteCafileEntry = (original: string, caBundlePath: string, fileExists: boolean) => {
 	const newline = original.includes('\r\n') ? '\r\n' : '\n';
 	const lines = original.split(/\r?\n/);
 
@@ -76,19 +76,31 @@ const rewriteCafileEntry = (original: string, caBundlePath: string) => {
 		}
 
 		const leadingWhitespace = line.match(/^\s*/)?.[0] ?? '';
-		const replacement = `${leadingWhitespace}openssl.cafile = "${caBundlePath}"`;
-
-		if (line === replacement) {
+		
+		// If file exists, use hardcoded path
+		if (fileExists) {
+			const replacement = `${leadingWhitespace}openssl.cafile = "${caBundlePath}"`;
+			if (line === replacement) {
+				return line;
+			}
+			changed = true;
+			return replacement;
+		} else {
+			// If file doesn't exist and path is hardcoded, switch back to template
+			if (line.includes(caBundlePath)) {
+				const replacement = `${leadingWhitespace}openssl.cafile="{{wpCaBundlePath}}"`;
+				changed = true;
+				return replacement;
+			}
+			// If already using template, don't change
 			return line;
 		}
-
-		changed = true;
-		return replacement;
 	});
 
 	let updated = updatedLines.join(newline);
 
-	if (!changed && original.includes('{{wpCaBundlePath}}')) {
+	// Handle template replacement when file exists
+	if (fileExists && !changed && original.includes('{{wpCaBundlePath}}')) {
 		const replaced = original.replace(/{{wpCaBundlePath}}/g, caBundlePath);
 		changed = replaced !== original;
 		updated = changed ? replaced : updated;
@@ -101,6 +113,7 @@ const updatePhpConfigs = async (
 	fileSystem: any,
 	phpIniPaths: string[],
 	caBundlePath: string,
+	caBundleExists: boolean,
 	localLogger: any
 ) => {
 	let changed = false;
@@ -111,7 +124,8 @@ const updatePhpConfigs = async (
 			const original = await fileSystem.readFile(iniPath, 'utf8');
 			const { content, changed: fileChanged } = rewriteCafileEntry(
 				original,
-				caBundlePath
+				caBundlePath,
+				caBundleExists
 			);
 
 			if (fileChanged) {
@@ -208,6 +222,7 @@ export default function (context) {
 
 		const wpCaBundlePath = path.join(
 			resolvedSitePath,
+			'app',
 			'public',
 			'wp',
 			'wp-includes',
@@ -215,10 +230,13 @@ export default function (context) {
 			'ca-bundle.crt'
 		);
 
+		const caBundleExists = await fileExists(fileSystem, wpCaBundlePath);
+
 		const { changed, errors } = await updatePhpConfigs(
 			fileSystem,
 			phpIniPaths,
 			wpCaBundlePath,
+			caBundleExists,
 			localLogger
 		);
 
