@@ -22,6 +22,7 @@ This allows you to type in the production url and it will use that url to fetch 
 
 ### SSL Fix for ca-bundle.crt path if you are using bedrock.
 Fixes SSL issues with bedrock installs by updating the ca-bundle.crt path in the php.ini file. Currently hardcoding to add the extra wp folder in the `public/wp/wp-includes/certificates/ca-bundle.crt` path.
+This function runs on site start, so you don't need to think about anything :)
 
 ## Installation
 
