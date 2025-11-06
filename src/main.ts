@@ -145,8 +145,77 @@ const updatePhpConfigs = async (
 	return { changed, errors };
 };
 
+const fixSslConfig = async (
+	siteId: string,
+	sitePath: string,
+	fileSystem: any,
+	localLogger: any,
+	context: any,
+	shouldRestart: boolean = false
+): Promise<boolean | undefined> => {
+	if (!sitePath) {
+		return undefined;
+	}
+
+	const resolvedSitePath = normalizeSitePath(sitePath);
+	const confRoot = path.join(resolvedSitePath, 'conf');
+	let phpIniPaths: string[];
+
+	try {
+		phpIniPaths = await collectPhpIniPaths(fileSystem, confRoot);
+	} catch (error) {
+		localLogger?.log(
+			'info',
+			`Unable to collect php.ini paths for ${siteId}: ${error}`
+		);
+		return undefined;
+	}
+
+	if (phpIniPaths.length === 0) {
+		return undefined;
+	}
+
+	const wpCaBundlePath = path.join(
+		resolvedSitePath,
+		'app',
+		'public',
+		'wp',
+		'wp-includes',
+		'certificates',
+		'ca-bundle.crt'
+	);
+
+	const caBundleExists = await fileExists(fileSystem, wpCaBundlePath);
+
+	const { changed, errors } = await updatePhpConfigs(
+		fileSystem,
+		phpIniPaths,
+		wpCaBundlePath,
+		caBundleExists,
+		localLogger
+	);
+
+	if (errors.length) {
+		return undefined;
+	}
+
+	if (changed && shouldRestart) {
+		const { siteProcessManager } = ServiceContainer.cradle as any;
+		try {
+			siteProcessManager.restart(SiteData.getSite(siteId));
+		} catch (error) {
+			localLogger?.log(
+				'info',
+				`Failed to restart site ${siteId} after SSL update: ${error}`
+			);
+		}
+	}
+
+	return changed;
+};
+
 export default function (context) {
-	const { electron, fileSystem } = context;
+	const { electron, fileSystem, hooks } = context;
 	const { siteProcessManager, localLogger } = ServiceContainer.cradle as any;
 	const { ipcMain } = electron;
 
@@ -183,94 +252,15 @@ export default function (context) {
 		}
 	});
 
-	ipcMain.on('fix-ssl-config', async (event, siteId, sitePath) => {
-		if (!sitePath) {
-			context.notifier.notify({
-				title: 'SSL config update failed',
-				message: 'Missing site path.',
-			});
-			return;
-		}
-
-		const resolvedSitePath = normalizeSitePath(sitePath);
-		const confRoot = path.join(resolvedSitePath, 'conf');
-		let phpIniPaths: string[];
-
-		try {
-			phpIniPaths = await collectPhpIniPaths(fileSystem, confRoot);
-		} catch (error) {
-			context.notifier.notify({
-				title: 'SSL config update failed',
-				message: String(error),
-			});
-
-			localLogger?.log(
-				'info',
-				`Unable to collect php.ini paths for ${siteId}: ${error}`
-			);
-
-			return;
-		}
-
-		if (phpIniPaths.length === 0) {
-			context.notifier.notify({
-				title: 'SSL config update',
-				message: 'No php.ini.hbs files found. Nothing to update.',
-			});
-			return;
-		}
-
-		const wpCaBundlePath = path.join(
-			resolvedSitePath,
-			'app',
-			'public',
-			'wp',
-			'wp-includes',
-			'certificates',
-			'ca-bundle.crt'
-		);
-
-		const caBundleExists = await fileExists(fileSystem, wpCaBundlePath);
-
-		const { changed, errors } = await updatePhpConfigs(
+	hooks.addAction('siteStarted', async (site: any) => {
+		await fixSslConfig(
+			site.id,
+			site.path,
 			fileSystem,
-			phpIniPaths,
-			wpCaBundlePath,
-			caBundleExists,
-			localLogger
+			localLogger,
+			context,
+			false
 		);
-
-		if (errors.length) {
-			context.notifier.notify({
-				title: 'SSL config update failed',
-				message:
-					'One or more php.ini.hbs files could not be updated. Check Local logs for details.',
-			});
-
-			return;
-		}
-
-		if (changed) {
-			context.notifier.notify({
-				title: 'SSL config updated',
-				message:
-					'openssl.cafile path updated. Restarting the site to apply changes.',
-			});
-
-			try {
-				siteProcessManager.restart(SiteData.getSite(siteId));
-			} catch (error) {
-				localLogger?.log(
-					'info',
-					`Failed to restart site ${siteId} after SSL update: ${error}`
-				);
-			}
-		} else {
-			context.notifier.notify({
-				title: 'SSL config update',
-				message: 'No changes were necessary.',
-			});
-		}
 	});
 
 	ipcMain.on('convert-to-multisite', async (event, siteId) => {
