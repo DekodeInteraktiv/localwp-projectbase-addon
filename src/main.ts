@@ -2,12 +2,138 @@
 import { getServiceContainer, SiteData } from '@getflywheel/local/main';
 
 import { MultiSite } from '@getflywheel/local';
+import * as path from 'path';
 
 const ServiceContainer = getServiceContainer();
 
+const normalizeSitePath = (sitePath: string) =>
+	sitePath.replace(/^~/, process.env.HOME || '');
+
+const fileExists = async (fileSystem: any, target: string) => {
+	try {
+		await fileSystem.access(target);
+		return true;
+	} catch {
+		return false;
+	}
+};
+
+const isDirectory = async (fileSystem: any, directory: string) => {
+	try {
+		const stats = await fileSystem.stat(directory);
+		return stats.isDirectory();
+	} catch {
+		return false;
+	}
+};
+
+const collectPhpIniPaths = async (fileSystem: any, confRoot: string) => {
+	const paths: string[] = [];
+	const basePath = path.join(confRoot, 'php', 'php.ini.hbs');
+
+	if (await fileExists(fileSystem, basePath)) {
+		paths.push(basePath);
+	}
+
+	let entries: string[];
+
+	try {
+		entries = await fileSystem.readdir(confRoot);
+	} catch (error) {
+		throw new Error(`Unable to read PHP config directory: ${error}`);
+	}
+
+	for (const entry of entries) {
+		if (!entry.startsWith('php-')) {
+			continue;
+		}
+
+		const versionDir = path.join(confRoot, entry);
+
+		if (!(await isDirectory(fileSystem, versionDir))) {
+			continue;
+		}
+
+		const iniPath = path.join(versionDir, 'php.ini.hbs');
+
+		if (await fileExists(fileSystem, iniPath)) {
+			paths.push(iniPath);
+		}
+	}
+
+	return paths;
+};
+
+const rewriteCafileEntry = (original: string, caBundlePath: string) => {
+	const newline = original.includes('\r\n') ? '\r\n' : '\n';
+	const lines = original.split(/\r?\n/);
+
+	let changed = false;
+
+	const updatedLines = lines.map(line => {
+		if (!line.trim().startsWith('openssl.cafile')) {
+			return line;
+		}
+
+		const leadingWhitespace = line.match(/^\s*/)?.[0] ?? '';
+		const replacement = `${leadingWhitespace}openssl.cafile = "${caBundlePath}"`;
+
+		if (line === replacement) {
+			return line;
+		}
+
+		changed = true;
+		return replacement;
+	});
+
+	let updated = updatedLines.join(newline);
+
+	if (!changed && original.includes('{{wpCaBundlePath}}')) {
+		const replaced = original.replace(/{{wpCaBundlePath}}/g, caBundlePath);
+		changed = replaced !== original;
+		updated = changed ? replaced : updated;
+	}
+
+	return { content: changed ? updated : original, changed };
+};
+
+const updatePhpConfigs = async (
+	fileSystem: any,
+	phpIniPaths: string[],
+	caBundlePath: string,
+	localLogger: any
+) => {
+	let changed = false;
+	const errors: string[] = [];
+
+	for (const iniPath of phpIniPaths) {
+		try {
+			const original = await fileSystem.readFile(iniPath, 'utf8');
+			const { content, changed: fileChanged } = rewriteCafileEntry(
+				original,
+				caBundlePath
+			);
+
+			if (fileChanged) {
+				await fileSystem.writeFile(iniPath, content, 'utf8');
+				changed = true;
+			}
+		} catch (error) {
+			errors.push(`${path.basename(iniPath)}: ${error}`);
+
+				localLogger?.log(
+					'info',
+					`Error updating ${iniPath}: ${error}`
+				);
+		}
+	}
+
+	return { changed, errors };
+};
+
 export default function (context) {
 	const { electron, fileSystem } = context;
-	const { siteProcessManager } = ServiceContainer.cradle;
+	const { siteProcessManager, localLogger } = ServiceContainer.cradle as any;
 	const { ipcMain } = electron;
 
 	ipcMain.on('update-multisite-config', async (event, siteId, sitePath) => {
@@ -36,10 +162,96 @@ export default function (context) {
 				message: String(error),
 			});
 
-			ServiceContainer.cradle.localLogger.log(
+			localLogger?.log(
 				'info',
 				`Error moving wordpress-multi.conf ${siteId}: ${error}`
 			);
+		}
+	});
+
+	ipcMain.on('fix-ssl-config', async (event, siteId, sitePath) => {
+		if (!sitePath) {
+			context.notifier.notify({
+				title: 'SSL config update failed',
+				message: 'Missing site path.',
+			});
+			return;
+		}
+
+		const resolvedSitePath = normalizeSitePath(sitePath);
+		const confRoot = path.join(resolvedSitePath, 'conf');
+		let phpIniPaths: string[];
+
+		try {
+			phpIniPaths = await collectPhpIniPaths(fileSystem, confRoot);
+		} catch (error) {
+			context.notifier.notify({
+				title: 'SSL config update failed',
+				message: String(error),
+			});
+
+			localLogger?.log(
+				'info',
+				`Unable to collect php.ini paths for ${siteId}: ${error}`
+			);
+
+			return;
+		}
+
+		if (phpIniPaths.length === 0) {
+			context.notifier.notify({
+				title: 'SSL config update',
+				message: 'No php.ini.hbs files found. Nothing to update.',
+			});
+			return;
+		}
+
+		const wpCaBundlePath = path.join(
+			resolvedSitePath,
+			'public',
+			'wp',
+			'wp-includes',
+			'certificates',
+			'ca-bundle.crt'
+		);
+
+		const { changed, errors } = await updatePhpConfigs(
+			fileSystem,
+			phpIniPaths,
+			wpCaBundlePath,
+			localLogger
+		);
+
+		if (errors.length) {
+			context.notifier.notify({
+				title: 'SSL config update failed',
+				message:
+					'One or more php.ini.hbs files could not be updated. Check Local logs for details.',
+			});
+
+			return;
+		}
+
+		if (changed) {
+			context.notifier.notify({
+				title: 'SSL config updated',
+				message:
+					'openssl.cafile path updated. Restarting the site to apply changes.',
+			});
+
+			try {
+				siteProcessManager.restart(SiteData.getSite(siteId));
+			} catch (error) {
+				localLogger?.log(
+					'info',
+					`Failed to restart site ${siteId} after SSL update: ${error}`
+				);
+			}
+		} else {
+			context.notifier.notify({
+				title: 'SSL config update',
+				message: 'No changes were necessary.',
+			});
 		}
 	});
 
@@ -69,7 +281,7 @@ export default function (context) {
 					fileSystem.writeFile(confPath, data, error => {
 						if (error) throw error;
 
-						ServiceContainer.cradle.localLogger.log(
+						localLogger?.log(
 							'info',
 							`site.conf updated for ${siteId}`
 						);
@@ -92,7 +304,7 @@ export default function (context) {
 					message: String(error),
 				});
 
-				ServiceContainer.cradle.localLogger.log(
+				localLogger?.log(
 					'info',
 					`Error moving site.conf ${siteId}: ${error}`
 				);

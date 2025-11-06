@@ -65,6 +65,16 @@ const SiteInfoExtender = ({ site }) => {
 		}, 2000);
 	};
 
+	const fixSslConfig = () => {
+		setState({ updating: true });
+
+		ipcRenderer.send('fix-ssl-config', site.id, site.path);
+
+		const timeout = setTimeout(() => {
+			setState({ updating: false });
+		}, 2000);
+	};
+
 	return (
 		<>
 			{site.multiSite && (
@@ -89,6 +99,15 @@ const SiteInfoExtender = ({ site }) => {
 					</TextButton>
 				</TableListRow>
 			)}
+			<TableListRow key='fixssl' label=' '>
+				<TextButton
+					disabled={updating ? 'true' : ''}
+					style={{ paddingLeft: 0, float: 'right' }}
+					onClick={fixSslConfig}
+				>
+					Fix SSL config
+				</TextButton>
+			</TableListRow>
 			<TableListRow key='rootpath' label='Root Path'>
 				<BasicInput
 					value={rootPath}
