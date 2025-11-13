@@ -2,12 +2,221 @@
 import { getServiceContainer, SiteData } from '@getflywheel/local/main';
 
 import { MultiSite } from '@getflywheel/local';
+import * as path from 'path';
 
 const ServiceContainer = getServiceContainer();
 
+const normalizeSitePath = (sitePath: string) =>
+	sitePath.replace(/^~/, process.env.HOME || '');
+
+const fileExists = async (fileSystem: any, target: string) => {
+	try {
+		await fileSystem.access(target);
+		return true;
+	} catch {
+		return false;
+	}
+};
+
+const isDirectory = async (fileSystem: any, directory: string) => {
+	try {
+		const stats = await fileSystem.stat(directory);
+		return stats.isDirectory();
+	} catch {
+		return false;
+	}
+};
+
+const collectPhpIniPaths = async (fileSystem: any, confRoot: string) => {
+	const paths: string[] = [];
+	const basePath = path.join(confRoot, 'php', 'php.ini.hbs');
+
+	if (await fileExists(fileSystem, basePath)) {
+		paths.push(basePath);
+	}
+
+	let entries: string[];
+
+	try {
+		entries = await fileSystem.readdir(confRoot);
+	} catch (error) {
+		throw new Error(`Unable to read PHP config directory: ${error}`);
+	}
+
+	for (const entry of entries) {
+		if (!entry.startsWith('php-')) {
+			continue;
+		}
+
+		const versionDir = path.join(confRoot, entry);
+
+		if (!(await isDirectory(fileSystem, versionDir))) {
+			continue;
+		}
+
+		const iniPath = path.join(versionDir, 'php.ini.hbs');
+
+		if (await fileExists(fileSystem, iniPath)) {
+			paths.push(iniPath);
+		}
+	}
+
+	return paths;
+};
+
+const rewriteCafileEntry = (original: string, caBundlePath: string, fileExists: boolean) => {
+	const newline = original.includes('\r\n') ? '\r\n' : '\n';
+	const lines = original.split(/\r?\n/);
+
+	let changed = false;
+
+	const updatedLines = lines.map(line => {
+		if (!line.trim().startsWith('openssl.cafile')) {
+			return line;
+		}
+
+		const leadingWhitespace = line.match(/^\s*/)?.[0] ?? '';
+		
+		// If file exists, use hardcoded path
+		if (fileExists) {
+			const replacement = `${leadingWhitespace}openssl.cafile = "${caBundlePath}"`;
+			if (line === replacement) {
+				return line;
+			}
+			changed = true;
+			return replacement;
+		} else {
+			// If file doesn't exist and path is hardcoded, switch back to template
+			if (line.includes(caBundlePath)) {
+				const replacement = `${leadingWhitespace}openssl.cafile="{{wpCaBundlePath}}"`;
+				changed = true;
+				return replacement;
+			}
+			// If already using template, don't change
+			return line;
+		}
+	});
+
+	let updated = updatedLines.join(newline);
+
+	// Handle template replacement when file exists
+	if (fileExists && !changed && original.includes('{{wpCaBundlePath}}')) {
+		const replaced = original.replace(/{{wpCaBundlePath}}/g, caBundlePath);
+		changed = replaced !== original;
+		updated = changed ? replaced : updated;
+	}
+
+	return { content: changed ? updated : original, changed };
+};
+
+const updatePhpConfigs = async (
+	fileSystem: any,
+	phpIniPaths: string[],
+	caBundlePath: string,
+	caBundleExists: boolean,
+	localLogger: any
+) => {
+	let changed = false;
+	const errors: string[] = [];
+
+	for (const iniPath of phpIniPaths) {
+		try {
+			const original = await fileSystem.readFile(iniPath, 'utf8');
+			const { content, changed: fileChanged } = rewriteCafileEntry(
+				original,
+				caBundlePath,
+				caBundleExists
+			);
+
+			if (fileChanged) {
+				await fileSystem.writeFile(iniPath, content, 'utf8');
+				changed = true;
+			}
+		} catch (error) {
+			errors.push(`${path.basename(iniPath)}: ${error}`);
+
+				localLogger?.log(
+					'info',
+					`Error updating ${iniPath}: ${error}`
+				);
+		}
+	}
+
+	return { changed, errors };
+};
+
+const fixSslConfig = async (
+	siteId: string,
+	sitePath: string,
+	fileSystem: any,
+	localLogger: any,
+	context: any,
+	shouldRestart: boolean = false
+): Promise<boolean | undefined> => {
+	if (!sitePath) {
+		return undefined;
+	}
+
+	const resolvedSitePath = normalizeSitePath(sitePath);
+	const confRoot = path.join(resolvedSitePath, 'conf');
+	let phpIniPaths: string[];
+
+	try {
+		phpIniPaths = await collectPhpIniPaths(fileSystem, confRoot);
+	} catch (error) {
+		localLogger?.log(
+			'info',
+			`Unable to collect php.ini paths for ${siteId}: ${error}`
+		);
+		return undefined;
+	}
+
+	if (phpIniPaths.length === 0) {
+		return undefined;
+	}
+
+	const wpCaBundlePath = path.join(
+		resolvedSitePath,
+		'app',
+		'public',
+		'wp',
+		'wp-includes',
+		'certificates',
+		'ca-bundle.crt'
+	);
+
+	const caBundleExists = await fileExists(fileSystem, wpCaBundlePath);
+
+	const { changed, errors } = await updatePhpConfigs(
+		fileSystem,
+		phpIniPaths,
+		wpCaBundlePath,
+		caBundleExists,
+		localLogger
+	);
+
+	if (errors.length) {
+		return undefined;
+	}
+
+	if (changed && shouldRestart) {
+		const { siteProcessManager } = ServiceContainer.cradle as any;
+		try {
+			siteProcessManager.restart(SiteData.getSite(siteId));
+		} catch (error) {
+			localLogger?.log(
+				'info',
+				`Failed to restart site ${siteId} after SSL update: ${error}`
+			);
+		}
+	}
+
+	return changed;
+};
+
 export default function (context) {
-	const { electron, fileSystem } = context;
-	const { siteProcessManager } = ServiceContainer.cradle;
+	const { electron, fileSystem, hooks } = context;
+	const { siteProcessManager, localLogger } = ServiceContainer.cradle as any;
 	const { ipcMain } = electron;
 
 	ipcMain.on('update-multisite-config', async (event, siteId, sitePath) => {
@@ -36,11 +245,22 @@ export default function (context) {
 				message: String(error),
 			});
 
-			ServiceContainer.cradle.localLogger.log(
+			localLogger?.log(
 				'info',
 				`Error moving wordpress-multi.conf ${siteId}: ${error}`
 			);
 		}
+	});
+
+	hooks.addAction('siteStarted', async (site: any) => {
+		await fixSslConfig(
+			site.id,
+			site.path,
+			fileSystem,
+			localLogger,
+			context,
+			false
+		);
 	});
 
 	ipcMain.on('convert-to-multisite', async (event, siteId) => {
@@ -69,7 +289,7 @@ export default function (context) {
 					fileSystem.writeFile(confPath, data, error => {
 						if (error) throw error;
 
-						ServiceContainer.cradle.localLogger.log(
+						localLogger?.log(
 							'info',
 							`site.conf updated for ${siteId}`
 						);
@@ -92,7 +312,7 @@ export default function (context) {
 					message: String(error),
 				});
 
-				ServiceContainer.cradle.localLogger.log(
+				localLogger?.log(
 					'info',
 					`Error moving site.conf ${siteId}: ${error}`
 				);
