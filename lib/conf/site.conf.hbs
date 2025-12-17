@@ -49,6 +49,12 @@ server {
 	}
 
 	location @image_fallback {
+		proxy_ssl_server_name on;
+		proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+		proxy_set_header X-Forwarded-Proto $scheme;
+
+		# Follow redirects from Cloudflare
+		proxy_intercept_errors off;
 		proxy_pass {{image_url}};
 	}
 
