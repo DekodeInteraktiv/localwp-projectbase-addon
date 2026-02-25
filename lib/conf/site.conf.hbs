@@ -44,7 +44,7 @@ server {
         add_header        Cache-Control "no-cache, public, must-revalidate, proxy-revalidate";
     }
 
-	location ~* ^.+\.(svg|svgz|jpg|jpeg|gif|png|ico|bmp)$ {
+	location ~* ^.+\.(svg|svgz|jpg|jpeg|gif|png|ico|bmp|webp)$ {
 		try_files $uri @image_fallback;
 	}
 
