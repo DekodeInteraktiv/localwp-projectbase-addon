@@ -1,7 +1,7 @@
 {
 	"name": "project-base-localwp-addon",
 	"productName": "Project Base LocalWP Addon",
-	"version": "1.2.2",
+	"version": "1.0.0",
 	"author": "Jørgen Stenshaugen",
 	"keywords": [
 		"local-addon"
